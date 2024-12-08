@@ -1,28 +1,31 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from datetime import datetime, timedelta
-from flask_mail import Mail, Message
-from email.message import EmailMessage
-import smtplib
+
+# from flask_mail import Mail, Message
+# from email.message import EmailMessage
+# import smtplib
 import os
 import sqlite3
 import logging
 import sys
+import bcrypt
 
 app = Flask(__name__)
 CORS(app)  # Configura o CORS
 
 availability = {}
 
-app.config["MAIL_SERVER"] = "smtp.office365.com"
-app.config["MAIL_PORT"] = 587
-app.config["MAIL_USE_TLS"] = True
-app.config["MAIL_USERNAME"] = "kingbarbeariaapp@outlook.com"
-app.config["MAIL_PASSWORD"] = "cpf25910638"
-app.config["MAIL_DEFAULT_SENDER"] = "kingbarbeariaapp@outlook.com"
+# # Configurações do Flask-Mail
+# app.config["MAIL_SERVER"] = "smtp.office365.com"
+# app.config["MAIL_PORT"] = 587
+# app.config["MAIL_USE_TLS"] = True
+# app.config["MAIL_USERNAME"] = "kingbarbeariaapp@outlook.com"
+# app.config["MAIL_PASSWORD"] = "cpf25910638"
+# app.config["MAIL_DEFAULT_SENDER"] = "kingbarbeariaapp@outlook.com"
 
 
-mail = Mail(app)
+# mail = Mail(app)
 
 
 # Caminho do banco de dados SQLite
@@ -33,6 +36,31 @@ DATABASE = os.environ.get(
 
 # Configuração de logging
 logging.basicConfig(stream=sys.stderr, level=logging.DEBUG)
+
+
+# def send_email_notification(booking):
+#     msg = Message(
+#         "Novo Agendamento",
+#         recipients=["kingbarbeariaapp@outlook.com"],
+#         body=f"""
+#         Novo agendamento:
+#         Barbeiro: {booking['barber']}
+#         Data: {booking['date']}
+#         Hora: {booking['time']}
+#         Duração: {booking['duration']} minutos
+#         Serviço: {booking['service']}
+#         Valor: {booking['value']}
+#         Nome do cliente: {booking['client_name']}
+#         Telefone do cliente: {booking['client_phone']}
+#         """,
+#     )
+
+#     try:
+#         with app.app_context():
+#             mail.send(msg)
+#         print("E-mail enviado com sucesso!")
+#     except Exception as e:
+#         print(f"Erro ao enviar e-mail: {e}")
 
 
 # Função para conectar ao banco de dados
@@ -49,13 +77,13 @@ def create_tables():
     # Tabela de Usuários
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS users (
+       CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             phone TEXT NOT NULL,
-            email TEXT UNIQUE,
-            photo BLOB,
-            default_photo_url TEXT
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """
     )
@@ -107,29 +135,29 @@ def create_tables():
 create_tables()
 
 
-def send_email_notification(booking):
-    msg = EmailMessage()
-    msg.set_content(
-        f"""
-        Novo agendamento:
-        Barbeiro: {booking['barber']}
-        Data: {booking['date']}
-        Hora: {booking['time']}
-        Duração: {booking['duration']} minutos
-        Serviço: {booking['service']}
-        Valor: {booking['value']}
-        Nome do cliente: {booking['client_name']}
-        Telefone do cliente: {booking['client_phone']}
-    """
-    )
-    msg["Subject"] = "Novo Agendamento"
-    msg["From"] = "kingbarbeariaapp@outlook.com"
-    msg["To"] = "kingbarbeariaapp@outlook.com"
+# def send_email_notification(booking):
+#     msg = EmailMessage()
+#     msg.set_content(
+#         f"""
+#         Novo agendamento:
+#         Barbeiro: {booking['barber']}
+#         Data: {booking['date']}
+#         Hora: {booking['time']}
+#         Duração: {booking['duration']} minutos
+#         Serviço: {booking['service']}
+#         Valor: {booking['value']}
+#         Nome do cliente: {booking['client_name']}
+#         Telefone do cliente: {booking['client_phone']}
+#     """
+#     )
+#     msg["Subject"] = "Novo Agendamento"
+#     msg["From"] = "kingbarbeariaapp@outlook.com"
+#     msg["To"] = "kingbarbeariaapp@outlook.com"
 
-    with smtplib.SMTP("smtp.outlook.com", 587) as server:
-        server.starttls()
-        server.login("kingbarbeariaapp@outlook.com", "cpf25910638")
-        server.send_message(msg)
+#     with smtplib.SMTP("smtp.outlook.com", 587) as server:
+#         server.starttls()
+#         server.login("kingbarbeariaapp@outlook.com", "cpf25910638")
+#         server.send_message(msg)
 
 
 # Inserir barbeiros iniciais
@@ -146,45 +174,67 @@ insert_initial_barbers()
 
 @app.route("/register", methods=["POST"])
 def register_user():
-    name = request.form.get("name")
-    phone = request.form.get("phone")
-    email = request.form.get("email", "")  # Email é opcional
+    """Rota para registrar um novo usuário."""
+    data = request.get_json()
 
-    logging.debug(f"Recebido: name={name}, phone={phone}, email={email}")
+    # Extração dos dados enviados no corpo da requisição
+    name = data.get("name")
+    phone = data.get("phone")
+    email = data.get("email")
+    password = data.get("password")
 
-    if not name or not phone:
-        logging.warning("Nome e telefone são obrigatórios.")
-        return jsonify({"message": "Nome e telefone são obrigatórios."}), 400
+    # Validação para garantir que todos os campos obrigatórios foram preenchidos
+    if not all([name, phone, email, password]):
+        return jsonify({"message": "Todos os campos são obrigatórios"}), 400
 
-    conn = None
     try:
+        # Gerar o hash da senha
+        hashed_password = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+
         conn = get_db_connection()
-        user_exists = conn.execute(
-            "SELECT * FROM users WHERE name = ? AND phone = ?", (name, phone)
-        ).fetchone()
-
-        if user_exists:
-            return jsonify({"message": "Usuário já cadastrado"}), 400
-
+        # Inserção dos dados do usuário na tabela
         conn.execute(
-            "INSERT INTO users (name, phone, email) VALUES (?, ?, ?)",
-            (name, phone, email),
+            """
+            INSERT INTO users (name, phone, email, password)
+            VALUES (?, ?, ?, ?)
+            """,
+            (name, phone, email, hashed_password),
         )
         conn.commit()
-        logging.info(f"Usuário cadastrado com sucesso: {name}")
-        return jsonify({"message": "Usuário cadastrado com sucesso!"})
-
+        conn.close()
+        return jsonify({"message": "Usuário registrado com sucesso"}), 201
+    except sqlite3.IntegrityError:
+        # Caso o email já esteja registrado
+        return jsonify({"message": "Email já registrado"}), 400
     except Exception as e:
-        logging.error(f"Erro ao cadastrar usuário: {e}")
-        return jsonify({"message": "Erro ao cadastrar usuário"}), 500
-
-    finally:
-        if conn:
-            conn.close()
+        logging.error(f"Erro ao registrar usuário: {e}")
+        return jsonify({"message": "Erro ao registrar usuário"}), 500
 
 
 @app.route("/users", methods=["GET"])
-def get_all_users():
+def get_users():
+    """Rota para retornar todos os usuários."""
+    try:
+        conn = get_db_connection()
+        users = conn.execute(
+            "SELECT id, name, phone, email, password FROM users"
+        ).fetchall()
+        conn.close()
+
+        # Formatar os dados para JSON, convertendo bytes para string
+        user_list = []
+        for user in users:
+            user_data = dict(user)
+            user_data["password"] = user_data["password"].decode(
+                "utf-8"
+            )  # Decodificar hash
+            user_list.append(user_data)
+
+        return jsonify(user_list), 200
+    except Exception as e:
+        logging.error(f"Erro ao recuperar usuários: {e}")
+        return jsonify({"message": "Erro ao recuperar usuários"}), 500
+
     try:
         conn = get_db_connection()
         users = conn.execute("SELECT * FROM users").fetchall()
@@ -237,27 +287,80 @@ def get_users_all():
 
 
 @app.route("/login", methods=["POST"])
-def login_user():
+def user_login():
+    """Rota para realizar login de um usuário."""
     data = request.get_json()
-    name = data.get("name")
-    phone = data.get("phone")
 
-    if not name or not phone:
-        logging.warning("Nome ou telefone não fornecidos na requisição POST /login")
-        return jsonify({"message": "Nome e telefone devem ser fornecidos"}), 400
+    # Extração dos dados enviados no corpo da requisição
+    email = data.get("email")
+    password = data.get("password")
 
-    conn = get_db_connection()
-    user = conn.execute(
-        "SELECT * FROM users WHERE name = ? AND phone = ?", (name, phone)
-    ).fetchone()
-    conn.close()
+    # Validação para garantir que email e senha foram enviados
+    if not all([email, password]):
+        return jsonify({"message": "Email e senha são obrigatórios"}), 400
 
-    if not user:
-        logging.info(f"Falha no login: nome={name}, telefone={phone}")
-        return jsonify({"message": "Usuário ou senha inválidos"}), 401
+    try:
+        conn = get_db_connection()
+        # Consulta para verificar as credenciais (busca o hash da senha)
+        user = conn.execute(
+            """
+            SELECT id, name, phone, email, password
+            FROM users
+            WHERE email = ?
+            """,
+            (email,),
+        ).fetchone()
+        conn.close()
 
-    logging.info(f"Login bem-sucedido: nome={name}, telefone={phone}")
-    return jsonify({"message": "Login successful!"}), 200
+        if user and bcrypt.checkpw(password.encode("utf-8"), user["password"]):
+            # Remove o campo de senha antes de retornar o usuário
+            user_data = dict(user)
+            user_data.pop("password")  # Remover a senha do retorno
+            return jsonify({"message": "Login bem-sucedido", "user": user_data}), 200
+        else:
+            # Retorna mensagem de credenciais inválidas
+            return jsonify({"message": "Credenciais inválidas"}), 401
+    except Exception as e:
+        logging.error(f"Erro ao realizar login: {e}")
+        return jsonify({"message": "Erro ao realizar login"}), 500
+
+    """Rota para realizar login de um usuário."""
+    data = request.get_json()
+
+    # Extração dos dados enviados no corpo da requisição
+    email = data.get("email")
+    password = data.get("password")
+
+    # Validação para garantir que email e senha foram enviados
+    if not all([email, password]):
+        return jsonify({"message": "Email e senha são obrigatórios"}), 400
+
+    try:
+        conn = get_db_connection()
+        # Consulta para verificar as credenciais (busca apenas o hash da senha)
+        user = conn.execute(
+            """
+            SELECT id, name, phone, email, password
+            FROM users
+            WHERE email = ?
+            """,
+            (email,),
+        ).fetchone()
+        conn.close()
+
+        if user and bcrypt.checkpw(
+            password.encode("utf-8"), user["password"].encode("utf-8")
+        ):
+            # Remove o campo de senha antes de retornar o usuário
+            user_data = dict(user)
+            user_data.pop("password")
+            return jsonify({"message": "Login bem-sucedido", "user": user_data}), 200
+        else:
+            # Retorna mensagem de credenciais inválidas
+            return jsonify({"message": "Credenciais inválidas"}), 401
+    except Exception as e:
+        logging.error(f"Erro ao realizar login: {e}")
+        return jsonify({"message": "Erro ao realizar login"}), 500
 
 
 availability = {"Wallace": [], "Mateus": []}
@@ -288,54 +391,31 @@ def schedule_appointment():
     barber = data.get("barber")
     date = data.get("date")
     time = data.get("time")
-    duration = int(data.get("duration", 40))
+    duration = data.get("duration", 40)  # Valor padrão de 40 minutos
+    value = data.get("value", 0.0)
 
-    if not barber or not time or not date:
-        return jsonify({"error": "Barber, date, and time are required"}), 400
+    if not barber or not date or not time:
+        return jsonify({"error": "Campos obrigatórios: barber, date, time"}), 400
 
     try:
         booking_start = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
     except ValueError:
-        return jsonify({"error": "Invalid date or time format"}), 400
-
-    booking_end = booking_start + timedelta(minutes=duration)
-
-    for booking in availability.get(barber, []):
-        existing_start = datetime.strptime(
-            f"{booking['date']} {booking['time']}", "%Y-%m-%d %H:%M"
-        )
-        existing_end = existing_start + timedelta(minutes=booking["duration"])
-
-        if booking_start < existing_end and booking_end > existing_start:
-            return (
-                jsonify({"error": "Barber is not available at the selected time"}),
-                409,
-            )
-
-    new_id = (
-        max([booking["id"] for booking in availability.get(barber, [])], default=0) + 1
-    )
+        return jsonify({"error": "Formato de data ou hora inválido"}), 400
 
     new_booking = {
-        "id": new_id,
+        "id": len(availability.get(barber, [])) + 1,
         "date": date,
         "time": time,
         "duration": duration,
-        "service": data.get("service", "Undefined service"),
-        "value": data.get("value", 0),
-        "client_name": data.get("name", "Unknown client"),
-        "client_phone": data.get("phone", "No phone number"),
+        "service": data.get("service"),
+        "value": value,
+        "client_name": data.get("name"),
+        "client_phone": data.get("phone"),
         "client_email": data.get("email"),
         "barber": barber,
     }
 
     availability.setdefault(barber, []).append(new_booking)
-
-    print(f"Agendamento adicionado para o barbeiro {barber}: {new_booking}")
-
-    # Enviar email de notificação
-    send_email_notification(new_booking)
-
     return jsonify(new_booking), 201
 
 
@@ -356,19 +436,27 @@ def get_availability():
 
     available_times = []
     current_time = start_time
+
     while current_time < end_time:
         is_available = True
+
         for booking in availability[barber]:
             if booking["date"] == date:
-                booking_start = datetime.strptime(booking["time"], "%H:%M")
-                booking_end = booking_start + timedelta(minutes=booking["duration"])
+                try:
+                    booking_start = datetime.strptime(booking["time"], "%H:%M")
+                    # Garantir duração padrão se não estiver definida
+                    duration_minutes = booking.get("duration", 40)
+                    booking_end = booking_start + timedelta(minutes=duration_minutes)
 
-                if (
-                    booking_start <= current_time < booking_end
-                    or booking_start < current_time + step <= booking_end
-                ):
-                    is_available = False
-                    break
+                    # Verificar se o horário está ocupado
+                    if (
+                        booking_start <= current_time < booking_end
+                        or booking_start < current_time + step <= booking_end
+                    ):
+                        is_available = False
+                        break
+                except Exception as e:
+                    print(f"Erro ao processar agendamento: {e}")
 
         if is_available:
             available_times.append(current_time.strftime("%H:%M"))
@@ -379,54 +467,85 @@ def get_availability():
 
 
 @app.route("/customer_bookings", methods=["GET"])
-def get_customer_bookings():
-    name = request.args.get("name")
-    phone = request.args.get("phone")
+def customer_bookings():
+    try:
+        # Obtém e normaliza os parâmetros da requisição
+        client_name = request.args.get("name", "").strip().lower()
+        client_phone = "".join(
+            filter(str.isdigit, request.args.get("phone", "").strip())
+        )
 
-    if not name or not phone:
-        return jsonify({"error": "Name and phone are required"}), 400
+        print(f"Parâmetros normalizados: name={client_name}, phone={client_phone}")
 
-    # Verifica se o cliente está no banco de dados
-    customer_bookings = []
-    for barber, bookings in availability.items():
-        for booking in bookings:
-            if booking["client_name"] == name and booking["client_phone"] == phone:
-                customer_bookings.append(
-                    {
-                        "id": booking["id"],  # Inclui o ID do agendamento
-                        "service": booking["service"],
-                        "barber": barber,
-                        "date": booking["date"],
-                        "time": booking["time"],
-                        "duration": booking["duration"],
-                        "valueservice": booking["value"],
-                    }
+        if not client_name or not client_phone:
+            return (
+                jsonify({"error": "Os parâmetros 'name' e 'phone' são obrigatórios."}),
+                400,
+            )
+
+        # Lista para armazenar os agendamentos do cliente
+        customer_bookings = []
+
+        # Itera sobre os barbeiros e seus agendamentos
+        for barber, bookings in availability.items():
+            print(f"Barbeiro: {barber}, Agendamentos: {bookings}")
+
+            # Filtra os agendamentos pelo nome e telefone do cliente
+            for booking in bookings:
+                print(
+                    f"Verificando agendamento: Nome={booking['client_name'].strip().lower()} / "
+                    f"Telefone={''.join(filter(str.isdigit, booking['client_phone'].strip()))}"
                 )
 
-    if not customer_bookings:
-        return jsonify([]), 200  # Retorna lista vazia se não houver agendamentos
+                if (
+                    booking["client_name"].strip().lower() == client_name
+                    and "".join(filter(str.isdigit, booking["client_phone"].strip()))
+                    == client_phone
+                ):
+                    print(f"Agendamento encontrado: {booking}")
+                    customer_bookings.append(booking)
 
-    return jsonify(customer_bookings), 200
+        # Verifica se algum agendamento foi encontrado
+        if not customer_bookings:
+            print("Nenhum agendamento encontrado para o cliente.")
+            return jsonify([]), 200
+
+        # Retorna os agendamentos encontrados
+        return jsonify(customer_bookings), 200
+
+    except Exception as e:
+        app.logger.error(f"Erro ao buscar agendamentos: {e}")
+        return jsonify({"error": "Erro interno no servidor"}), 500
 
 
 @app.route("/customer_bookings/<int:booking_id>", methods=["DELETE"])
 def delete_customer_booking(booking_id):
-    booking_found = False
+    try:
+        booking_found = False
 
-    for barber, bookings in availability.items():
-        for booking in bookings:
-            if booking["id"] == booking_id:
-                bookings.remove(booking)
-                booking_found = True
+        # Itera sobre os barbeiros e seus agendamentos
+        for barber, bookings in availability.items():
+            for booking in bookings:
+                if booking["id"] == booking_id:
+                    print(f"Removendo agendamento: {booking}")
+                    bookings.remove(booking)
+                    booking_found = True
+                    break
+
+            if booking_found:
                 break
 
-        if booking_found:
-            break
+        # Se nenhum agendamento foi encontrado
+        if not booking_found:
+            print(f"Agendamento com ID {booking_id} não encontrado.")
+            return jsonify({"error": "Booking not found"}), 404
 
-    if not booking_found:
-        return jsonify({"error": "Booking not found"}), 404
+        print(f"Agendamento com ID {booking_id} removido com sucesso.")
+        return jsonify({"message": "Booking deleted successfully"}), 200
 
-    return jsonify({"message": "Booking deleted successfully"}), 200
+    except Exception as e:
+        app.logger.error(f"Erro ao excluir agendamento: {e}")
+        return jsonify({"error": "Erro interno no servidor"}), 500
 
 
 @app.route("/appointments", methods=["GET"])
@@ -506,47 +625,55 @@ def get_daily_cash():
     if not date:
         return jsonify({"error": "Date is required"}), 400
 
-    conn = get_db_connection()
-    transactions = conn.execute(
-        """
-        SELECT barber_name, SUM(value) as total
-        FROM transactions
-        WHERE date = ?
-        GROUP BY barber_name
-    """,
-        (date,),
-    ).fetchall()
-    conn.close()
-
-    if not transactions:
-        return jsonify({"message": "No transactions found for this date"}), 404
-
-    result = []
-    for transaction in transactions:
-        result.append(
-            {
-                "barber_name": transaction["barber_name"],
-                "total_cash": f"R$ {transaction['total']:.2f}",
-            }
-        )
-
-
-@app.route("/test-email", methods=["GET"])
-def test_email():
     try:
-        msg = Message(
-            subject="Teste de E-mail",
-            recipients=["kingbarbeariaapp@outlook.com"],  # Substitua pelo seu e-mail
-            body="Este é um e-mail de teste.",
-        )
-        mail.send(msg)
-        return jsonify({"message": "E-mail de teste enviado com sucesso!"}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        conn = get_db_connection()
+        transactions = conn.execute(
+            """
+            SELECT barber_name, SUM(value) as total
+            FROM transactions
+            WHERE date = ?
+            GROUP BY barber_name
+        """,
+            (date,),
+        ).fetchall()
+        conn.close()
 
-    return jsonify(result), 200
+        if not transactions:
+            return jsonify({"message": "No transactions found for this date"}), 404
+
+        result = []
+        for transaction in transactions:
+            result.append(
+                {
+                    "barber_name": transaction["barber_name"],
+                    "total_cash": f"R$ {transaction['total']:.2f}",
+                }
+            )
+
+        return jsonify(result), 200
+    except Exception as e:
+        print(
+            f"Erro ao buscar caixa diário: {e}"
+        )  # Adicione esta linha para logar o erro
+        return jsonify({"error": "Internal server error"}), 500
+
+
+# @app.route("/test-email", methods=["GET"])
+# def test_email():
+#     try:
+#         msg = Message(
+#             subject="Teste de E-mail",
+#             recipients=["kingbarbeariaapp@outlook.com"],  # Substitua pelo seu e-mail
+#             body="Este é um e-mail de teste.",
+#         )
+#         mail.send(msg)
+#         return jsonify({"message": "E-mail de teste enviado com sucesso!"}), 200
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 500
+
+#     return jsonify(result), 200
 
 
 if __name__ == "__main__":
     # Remova o modo de depuração e ajuste a porta conforme necessário
-    app.run(host="192.168.15.5", port=5090, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)
